@@ -94,6 +94,7 @@
 #include "optimizer/planmain.h"
 #include "optimizer/restrictinfo.h"
 #include "parser/parsetree.h"
+#include "tcop/tcopprot.h"
 #include "utils/lsyscache.h"
 #include "utils/selfuncs.h"
 #include "utils/spccache.h"
@@ -5014,18 +5015,32 @@ void
 set_baserel_size_estimates(PlannerInfo *root, RelOptInfo *rel)
 {
 	double		nrows;
+	double		selectivity;
 
 	/* Should only be applied to base relations */
 	Assert(rel->relid > 0);
 
-	nrows = rel->tuples *
-		clauselist_selectivity(root,
-							   rel->baserestrictinfo,
-							   0,
-							   JOIN_INNER,
-							   NULL);
+	selectivity = clauselist_selectivity(root,
+										 rel->baserestrictinfo,
+										 0,
+										 JOIN_INNER,
+										 NULL);
+	nrows = rel->tuples * selectivity;
 
 	rel->rows = clamp_row_est(nrows);
+
+#ifdef ESS_MCV_NUMERIC_TRACE
+	if (debug_query_string != NULL &&
+		strstr(debug_query_string, "ESS_MCV_NUMERIC_TRACE") != NULL)
+	{
+		RangeTblEntry *rte = planner_rt_fetch(rel->relid, root);
+
+		ereport(DEBUG1,
+				(errmsg("ESS_MCV_NUMERIC_TRACE: base_relation_oid=%u rte_index=%d rel_tuples=%.17g selectivity_preclamp=%.17g nrows_preclamp=%.17g rows_postclamp=%.17g query=%s",
+						rte->relid, rel->relid, rel->tuples, selectivity,
+						nrows, rel->rows, debug_query_string)));
+	}
+#endif
 
 	cost_qual_eval(&rel->baserestrictcost, rel->baserestrictinfo, root);
 

@@ -36,6 +36,7 @@
 #include "postmaster/autovacuum.h"
 #include "statistics/extended_stats_internal.h"
 #include "statistics/statistics.h"
+#include "tcop/tcopprot.h"
 #include "utils/acl.h"
 #include "utils/array.h"
 #include "utils/attoptcache.h"
@@ -2017,6 +2018,23 @@ statext_mcv_clauselist_selectivity(PlannerInfo *root, List *clauses, int varReli
 
 			/* Factor this into the overall result */
 			sel *= stat_sel;
+
+#ifdef ESS_MCV_NUMERIC_TRACE
+			/*
+			 * Keep the numeric diagnostic opt-in at compile time.  The marker
+			 * in debug_query_string limits the trace to the controlled fixture
+			 * queries and also distinguishes separate planner invocations.
+			 */
+			if (bms_num_members(stat->keys) == 2 &&
+				debug_query_string != NULL &&
+				strstr(debug_query_string, "ESS_MCV_NUMERIC_TRACE") != NULL)
+				ereport(DEBUG1,
+						(errmsg("ESS_MCV_NUMERIC_TRACE: relid=%u selected_stat_oid=%u stat_clause_count=%d simple_sel=%.17g mcv_sel=%.17g mcv_basesel=%.17g mcv_totalsel=%.17g stat_sel=%.17g query=%s",
+								rte->relid, stat->statOid,
+								list_length(stat_clauses), simple_sel, mcv_sel,
+								mcv_basesel, mcv_totalsel, stat_sel,
+								debug_query_string)));
+#endif
 		}
 	}
 
