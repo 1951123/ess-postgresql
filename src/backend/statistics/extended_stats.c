@@ -1799,7 +1799,17 @@ statext_mcv_clauselist_selectivity(PlannerInfo *root, List *clauses, int varReli
 		 * to do
 		 */
 		if (!stat)
+		{
+			ereport(DEBUG1,
+					(errmsg("ESS_MCV_TRACE: relid=%u candidate=none; iteration terminated",
+							rte->relid)));
 			break;
+		}
+
+		ereport(DEBUG1,
+					(errmsg("ESS_MCV_TRACE: relid=%u selected_stat_oid=%u keys=%d",
+							rte->relid, stat->statOid,
+							bms_num_members(stat->keys))));
 
 		/* Ensure choose_best_statistics produced an expected stats type. */
 		Assert(stat->kind == STATS_EXT_MCV);
@@ -1859,6 +1869,9 @@ statext_mcv_clauselist_selectivity(PlannerInfo *root, List *clauses, int varReli
 			/* add clause to list and mark it as estimated */
 			stat_clauses = lappend(stat_clauses, (Node *) lfirst(l));
 			*estimatedclauses = bms_add_member(*estimatedclauses, listidx);
+			ereport(DEBUG1,
+						(errmsg("ESS_MCV_TRACE: relid=%u selected_stat_oid=%u claimed_clause_index=%d",
+								rte->relid, stat->statOid, listidx)));
 
 			/*
 			 * Reset the pointers, so that choose_best_statistics knows this
