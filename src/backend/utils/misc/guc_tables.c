@@ -98,6 +98,7 @@ extern char *default_tablespace;
 extern char *temp_tablespaces;
 extern bool ignore_checksum_failure;
 extern bool ignore_invalid_pages;
+extern bool ess_mcv_cpu_trace;
 
 #ifdef TRACE_SYNCSCAN
 extern bool trace_syncscan;
@@ -1454,6 +1455,16 @@ struct config_bool ConfigureNamesBool[] =
 			GUC_NOT_IN_SAMPLE
 		},
 		&Trace_notify,
+		false,
+		NULL, NULL, NULL
+	},
+	{
+		{"ess.mcv_cpu_trace", PGC_USERSET, DEVELOPER_OPTIONS,
+			gettext_noop("Emits opt-in extended-statistics phase CPU telemetry."),
+			NULL,
+			GUC_NOT_IN_SAMPLE
+		},
+		&ess_mcv_cpu_trace,
 		false,
 		NULL, NULL, NULL
 	},

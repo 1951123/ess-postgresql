@@ -45,6 +45,7 @@
 #include "utils/fmgroids.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
+#include "utils/pg_rusage.h"
 #include "utils/rel.h"
 #include "utils/selfuncs.h"
 #include "utils/syscache.h"
@@ -60,6 +61,9 @@
  * boundaries very much.
  */
 #define WIDTH_THRESHOLD  1024
+
+/* Opt-in research telemetry; disabled in normal server processes. */
+bool		ess_mcv_cpu_trace = false;
 
 /*
  * Used internally to refer to an individual statistics object, i.e.,
@@ -104,6 +108,13 @@ static StatsBuildData *make_build_data(Relation rel, StatExtEntry *stat,
 									   int numrows, HeapTuple *rows,
 									   VacAttrStats **stats, int stattarget);
 
+static int64
+ess_rusage_delta_us(const struct timeval *start, const struct timeval *end)
+{
+	return ((int64) end->tv_sec - (int64) start->tv_sec) * 1000000 +
+		(end->tv_usec - start->tv_usec);
+}
+
 
 /*
  * Compute requested extended stats, using the rows sampled for the plain
@@ -123,14 +134,21 @@ BuildRelationExtStatistics(Relation onerel, bool inh, double totalrows,
 	MemoryContext cxt;
 	MemoryContext oldcxt;
 	int64		ext_cnt;
+	int		stats_count;
+	PGRUsage	ess_cpu_start;
+	PGRUsage	ess_cpu_end;
 
 	/* Do nothing if there are no columns to analyze. */
 	if (!natts)
 		return;
 
+	if (ess_mcv_cpu_trace)
+		pg_rusage_init(&ess_cpu_start);
+
 	/* the list of stats has to be allocated outside the memory context */
 	pg_stext = table_open(StatisticExtRelationId, RowExclusiveLock);
 	statslist = fetch_statentries_for_relation(pg_stext, RelationGetRelid(onerel));
+	stats_count = list_length(statslist);
 
 	/* memory context for building each statistics object */
 	cxt = AllocSetContextCreate(CurrentMemoryContext,
@@ -250,6 +268,25 @@ BuildRelationExtStatistics(Relation onerel, bool inh, double totalrows,
 	list_free(statslist);
 
 	table_close(pg_stext, RowExclusiveLock);
+
+	if (ess_mcv_cpu_trace)
+	{
+		int64		user_us;
+		int64		system_us;
+
+		pg_rusage_init(&ess_cpu_end);
+		user_us = ess_rusage_delta_us(&ess_cpu_start.ru.ru_utime,
+								  &ess_cpu_end.ru.ru_utime);
+		system_us = ess_rusage_delta_us(&ess_cpu_start.ru.ru_stime,
+									&ess_cpu_end.ru.ru_stime);
+		ereport(DEBUG1,
+				(errmsg("ESS_EXT_CPU_TRACE: phase=BuildRelationExtStatistics relid=%u "
+						"stats_count=%d built_count=%lld user_us=%lld system_us=%lld "
+						"cpu_us=%lld",
+						 onerel->rd_id, stats_count, (long long) ext_cnt,
+						 (long long) user_us, (long long) system_us,
+						 (long long) (user_us + system_us))));
+	}
 }
 
 /*
