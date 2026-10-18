@@ -34,6 +34,7 @@
 #include "catalog/pg_inherits.h"
 #include "catalog/pg_namespace.h"
 #include "catalog/pg_statistic_ext.h"
+#include "commands/analyze_sample_cache.h"
 #include "commands/dbcommands.h"
 #include "commands/progress.h"
 #include "commands/tablecmds.h"
@@ -198,6 +199,8 @@ analyze_rel(Oid relid, RangeVar *relation,
 	/*
 	 * Check that it's of an analyzable relkind, and set up appropriately.
 	 */
+	ess_analyze_sample_check_relation(onerel);
+
 	if (onerel->rd_rel->relkind == RELKIND_RELATION ||
 		onerel->rd_rel->relkind == RELKIND_MATVIEW)
 	{
@@ -308,6 +311,7 @@ do_analyze_rel(Relation onerel, VacuumParams *params,
 	double		totalrows,
 				totaldeadrows;
 	HeapTuple  *rows;
+	SampleCache *sample_cache = NULL;
 	PGRUsage	ru0;
 	TimestampTz starttime = 0;
 	MemoryContext caller_context;
@@ -525,18 +529,39 @@ do_analyze_rel(Relation onerel, VacuumParams *params,
 	/*
 	 * Acquire the sample rows
 	 */
-	rows = (HeapTuple *) palloc(targrows * sizeof(HeapTuple));
 	pgstat_progress_update_param(PROGRESS_ANALYZE_PHASE,
 								 inh ? PROGRESS_ANALYZE_PHASE_ACQUIRE_SAMPLE_ROWS_INH :
 								 PROGRESS_ANALYZE_PHASE_ACQUIRE_SAMPLE_ROWS);
-	if (inh)
-		numrows = acquire_inherited_sample_rows(onerel, elevel,
+	if (ess_analyze_sample_import_enabled())
+	{
+		if (inh)
+			ereport(ERROR,
+					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+					 errmsg("ESS ANALYZE sample replay cannot analyze inherited rows")));
+
+		sample_cache = ess_analyze_sample_import_file(onerel,
+											ess_analyze_sample_import, targrows);
+		rows = sample_cache->tuples;
+		numrows = (int) sample_cache->tuple_count;
+		totalrows = sample_cache->totalrows;
+		totaldeadrows = 0.0;
+		ereport(elevel,
+				(errmsg("\"%s\": replayed %d rows from ESS ANALYZE sample, "
+						"%.0f estimated total rows",
+						RelationGetRelationName(onerel), numrows, totalrows)));
+	}
+	else
+	{
+		rows = (HeapTuple *) palloc(targrows * sizeof(HeapTuple));
+		if (inh)
+			numrows = acquire_inherited_sample_rows(onerel, elevel,
 												rows, targrows,
 												&totalrows, &totaldeadrows);
-	else
-		numrows = (*acquirefunc) (onerel, elevel,
+		else
+			numrows = (*acquirefunc) (onerel, elevel,
 								  rows, targrows,
 								  &totalrows, &totaldeadrows);
+	}
 
 	/*
 	 * Compute the statistics.  Temporary results during the calculations for
@@ -1343,6 +1368,10 @@ acquire_sample_rows(Relation onerel, int elevel,
 					bs.m, totalblocks,
 					liverows, deadrows,
 					numrows, *totalrows)));
+
+	if (ess_analyze_sample_export_enabled())
+		ess_analyze_sample_export_file(onerel, ess_analyze_sample_export,
+									   rows, numrows, targrows, *totalrows);
 
 	return numrows;
 }

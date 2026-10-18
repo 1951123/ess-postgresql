@@ -95,6 +95,8 @@ test: vacuum_parallel
 # "ANALYZE;" fail with "relation with OID $n does not exist".
 test: maintain_every
 
+test: analyze_sample_cache
+
 # no relation related tests can be put in this group
 test: publication subscription
 
