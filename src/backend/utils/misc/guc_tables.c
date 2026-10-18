@@ -37,6 +37,7 @@
 #include "catalog/namespace.h"
 #include "catalog/storage.h"
 #include "commands/async.h"
+#include "commands/analyze_sample_cache.h"
 #include "commands/tablespace.h"
 #include "commands/trigger.h"
 #include "commands/user.h"
@@ -3816,6 +3817,33 @@ struct config_real ConfigureNamesReal[] =
 
 struct config_string ConfigureNamesString[] =
 {
+	{
+		{"ess.analyze_sample_export", PGC_SUSET, DEVELOPER_OPTIONS,
+			gettext_noop("Exports the binary ANALYZE sample to a trusted local file."),
+			gettext_noop("Research-only single-heap-table control; empty disables it. "
+						 "Use a server-readable path with suitable permissions; it cannot "
+						 "be enabled together with ess.analyze_sample_import."),
+			GUC_NOT_IN_SAMPLE
+		},
+		&ess_analyze_sample_export,
+		"",
+		NULL, NULL, NULL
+	},
+
+	{
+		{"ess.analyze_sample_import", PGC_SUSET, DEVELOPER_OPTIONS,
+			gettext_noop("Replays a binary ANALYZE sample from a trusted local file."),
+			gettext_noop("Research-only single-heap-table control; empty disables it. "
+						 "The file must be produced by the same PostgreSQL build and "
+						 "must not be treated as an untrusted input; it cannot be enabled "
+						 "together with ess.analyze_sample_export."),
+			GUC_NOT_IN_SAMPLE
+		},
+		&ess_analyze_sample_import,
+		"",
+		NULL, NULL, NULL
+	},
+
 	{
 		{"archive_command", PGC_SIGHUP, WAL_ARCHIVING,
 			gettext_noop("Sets the shell command that will be called to archive a WAL file."),
