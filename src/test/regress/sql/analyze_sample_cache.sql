@@ -1,7 +1,8 @@
 -- Research-only binary ANALYZE sample capture/replay.
--- These names are confined to the disposable regression instance.
-\set samplefile '/tmp/ess-analyze-sample-cache.bin'
-\set corruptfile '/tmp/ess-analyze-sample-cache-corrupt.bin'
+-- These paths are confined to this regression run's isolated output directory.
+\getenv abs_builddir PG_ABS_BUILDDIR
+\set samplefile :abs_builddir '/results/analyze_sample_cache.bin'
+\set corruptfile :abs_builddir '/results/analyze_sample_cache-corrupt.bin'
 \setenv ESS_SAMPLEFILE :samplefile
 \setenv ESS_CORRUPTFILE :corruptfile
 
@@ -44,38 +45,108 @@ JOIN pg_statistic_ext_data d ON d.stxoid = e.oid
 WHERE e.stxrelid = 'ess_analyze_sample_cache_test'::regclass
   AND e.stxname = 'ess_analyze_sample_cache_mcv';
 
+-- Keep the representative planner estimate in the same isolated session.
+-- This fixture is not modified between capture and replay; filenode/page
+-- checks alone are not a content-level frozen-table proof.
+CREATE FUNCTION pg_temp.ess_analyze_sample_cache_plan(query_text text)
+RETURNS text
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    plan json;
+BEGIN
+    EXECUTE 'EXPLAIN (FORMAT JSON) ' || query_text INTO plan;
+    RETURN plan::text;
+END
+$$;
+CREATE TEMP TABLE ess_analyze_sample_cache_plan_before AS
+SELECT pg_temp.ess_analyze_sample_cache_plan(
+           'SELECT * FROM ess_analyze_sample_cache_test
+            WHERE category = ''category-1'' AND bucket = 1') AS plan;
+
 SET ess.analyze_sample_import = :'samplefile';
 ANALYZE ess_analyze_sample_cache_test;
 SELECT NOT EXISTS (
     SELECT * FROM ess_analyze_sample_cache_ordinary_before
-    EXCEPT
+    EXCEPT ALL
     SELECT a.attname,
            md5(row_to_json(s)::text)
     FROM pg_statistic s
     JOIN pg_attribute a ON a.attrelid = s.starelid AND a.attnum = s.staattnum
     WHERE s.starelid = 'ess_analyze_sample_cache_test'::regclass
+) AND NOT EXISTS (
+    SELECT a.attname,
+           md5(row_to_json(s)::text)
+    FROM pg_statistic s
+    JOIN pg_attribute a ON a.attrelid = s.starelid AND a.attnum = s.staattnum
+    WHERE s.starelid = 'ess_analyze_sample_cache_test'::regclass
+    EXCEPT ALL
+    SELECT * FROM ess_analyze_sample_cache_ordinary_before
 ) AS ordinary_statistics_replayed;
 SELECT NOT EXISTS (
     SELECT * FROM ess_analyze_sample_cache_mcv_before
-    EXCEPT
+    EXCEPT ALL
     SELECT md5(stxdmcv::text)
     FROM pg_statistic_ext e
     JOIN pg_statistic_ext_data d ON d.stxoid = e.oid
     WHERE e.stxrelid = 'ess_analyze_sample_cache_test'::regclass
       AND e.stxname = 'ess_analyze_sample_cache_mcv'
+) AND NOT EXISTS (
+    SELECT md5(stxdmcv::text)
+    FROM pg_statistic_ext e
+    JOIN pg_statistic_ext_data d ON d.stxoid = e.oid
+    WHERE e.stxrelid = 'ess_analyze_sample_cache_test'::regclass
+      AND e.stxname = 'ess_analyze_sample_cache_mcv'
+    EXCEPT ALL
+    SELECT * FROM ess_analyze_sample_cache_mcv_before
 ) AS pairwise_mcv_replayed;
+SELECT (SELECT plan FROM ess_analyze_sample_cache_plan_before) =
+       pg_temp.ess_analyze_sample_cache_plan(
+           'SELECT * FROM ess_analyze_sample_cache_test
+            WHERE category = ''category-1'' AND bucket = 1')
+       AS planner_estimate_replayed;
 
 -- A second replay must use the same tuple bytes/order, not resample.
 ANALYZE ess_analyze_sample_cache_test;
 SELECT NOT EXISTS (
     SELECT * FROM ess_analyze_sample_cache_ordinary_before
-    EXCEPT
+    EXCEPT ALL
     SELECT a.attname,
            md5(row_to_json(s)::text)
     FROM pg_statistic s
     JOIN pg_attribute a ON a.attrelid = s.starelid AND a.attnum = s.staattnum
     WHERE s.starelid = 'ess_analyze_sample_cache_test'::regclass
+) AND NOT EXISTS (
+    SELECT a.attname,
+           md5(row_to_json(s)::text)
+    FROM pg_statistic s
+    JOIN pg_attribute a ON a.attrelid = s.starelid AND a.attnum = s.staattnum
+    WHERE s.starelid = 'ess_analyze_sample_cache_test'::regclass
+    EXCEPT ALL
+    SELECT * FROM ess_analyze_sample_cache_ordinary_before
 ) AS second_replay_identical;
+SELECT NOT EXISTS (
+    SELECT * FROM ess_analyze_sample_cache_mcv_before
+    EXCEPT ALL
+    SELECT md5(stxdmcv::text)
+    FROM pg_statistic_ext e
+    JOIN pg_statistic_ext_data d ON d.stxoid = e.oid
+    WHERE e.stxrelid = 'ess_analyze_sample_cache_test'::regclass
+      AND e.stxname = 'ess_analyze_sample_cache_mcv'
+) AND NOT EXISTS (
+    SELECT md5(stxdmcv::text)
+    FROM pg_statistic_ext e
+    JOIN pg_statistic_ext_data d ON d.stxoid = e.oid
+    WHERE e.stxrelid = 'ess_analyze_sample_cache_test'::regclass
+      AND e.stxname = 'ess_analyze_sample_cache_mcv'
+    EXCEPT ALL
+    SELECT * FROM ess_analyze_sample_cache_mcv_before
+) AS second_pairwise_mcv_identical;
+SELECT (SELECT plan FROM ess_analyze_sample_cache_plan_before) =
+       pg_temp.ess_analyze_sample_cache_plan(
+           'SELECT * FROM ess_analyze_sample_cache_test
+            WHERE category = ''category-1'' AND bucket = 1')
+       AS second_planner_estimate_identical;
 
 -- The two paths are mutually exclusive at ANALYZE execution time.
 SET ess.analyze_sample_export = :'samplefile';

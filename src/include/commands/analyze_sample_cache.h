@@ -4,7 +4,10 @@
  *
  * Internal, research-only binary export/import support for ANALYZE samples.
  * The format is tied to this PostgreSQL server build and relation descriptor;
- * it is not a data export format and contains no computed statistics.
+ * it is not a data export format and contains no computed statistics.  The
+ * relation filenode/page-count guard is not a content-level frozen-table
+ * proof; callers and test harnesses must separately keep table contents
+ * stable while comparing estimates.
  *
  *-------------------------------------------------------------------------
  */

@@ -1,7 +1,8 @@
 -- Research-only binary ANALYZE sample capture/replay.
--- These names are confined to the disposable regression instance.
-\set samplefile '/tmp/ess-analyze-sample-cache.bin'
-\set corruptfile '/tmp/ess-analyze-sample-cache-corrupt.bin'
+-- These paths are confined to this regression run's isolated output directory.
+\getenv abs_builddir PG_ABS_BUILDDIR
+\set samplefile :abs_builddir '/results/analyze_sample_cache.bin'
+\set corruptfile :abs_builddir '/results/analyze_sample_cache-corrupt.bin'
 \setenv ESS_SAMPLEFILE :samplefile
 \setenv ESS_CORRUPTFILE :corruptfile
 SET client_min_messages = warning;
@@ -54,16 +55,42 @@ FROM pg_statistic_ext e
 JOIN pg_statistic_ext_data d ON d.stxoid = e.oid
 WHERE e.stxrelid = 'ess_analyze_sample_cache_test'::regclass
   AND e.stxname = 'ess_analyze_sample_cache_mcv';
+-- Keep the representative planner estimate in the same isolated session.
+-- This fixture is not modified between capture and replay; filenode/page
+-- checks alone are not a content-level frozen-table proof.
+CREATE FUNCTION pg_temp.ess_analyze_sample_cache_plan(query_text text)
+RETURNS text
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    plan json;
+BEGIN
+    EXECUTE 'EXPLAIN (FORMAT JSON) ' || query_text INTO plan;
+    RETURN plan::text;
+END
+$$;
+CREATE TEMP TABLE ess_analyze_sample_cache_plan_before AS
+SELECT pg_temp.ess_analyze_sample_cache_plan(
+           'SELECT * FROM ess_analyze_sample_cache_test
+            WHERE category = ''category-1'' AND bucket = 1') AS plan;
 SET ess.analyze_sample_import = :'samplefile';
 ANALYZE ess_analyze_sample_cache_test;
 SELECT NOT EXISTS (
     SELECT * FROM ess_analyze_sample_cache_ordinary_before
-    EXCEPT
+    EXCEPT ALL
     SELECT a.attname,
            md5(row_to_json(s)::text)
     FROM pg_statistic s
     JOIN pg_attribute a ON a.attrelid = s.starelid AND a.attnum = s.staattnum
     WHERE s.starelid = 'ess_analyze_sample_cache_test'::regclass
+) AND NOT EXISTS (
+    SELECT a.attname,
+           md5(row_to_json(s)::text)
+    FROM pg_statistic s
+    JOIN pg_attribute a ON a.attrelid = s.starelid AND a.attnum = s.staattnum
+    WHERE s.starelid = 'ess_analyze_sample_cache_test'::regclass
+    EXCEPT ALL
+    SELECT * FROM ess_analyze_sample_cache_ordinary_before
 ) AS ordinary_statistics_replayed;
  ordinary_statistics_replayed 
 ------------------------------
@@ -72,15 +99,33 @@ SELECT NOT EXISTS (
 
 SELECT NOT EXISTS (
     SELECT * FROM ess_analyze_sample_cache_mcv_before
-    EXCEPT
+    EXCEPT ALL
     SELECT md5(stxdmcv::text)
     FROM pg_statistic_ext e
     JOIN pg_statistic_ext_data d ON d.stxoid = e.oid
     WHERE e.stxrelid = 'ess_analyze_sample_cache_test'::regclass
       AND e.stxname = 'ess_analyze_sample_cache_mcv'
+) AND NOT EXISTS (
+    SELECT md5(stxdmcv::text)
+    FROM pg_statistic_ext e
+    JOIN pg_statistic_ext_data d ON d.stxoid = e.oid
+    WHERE e.stxrelid = 'ess_analyze_sample_cache_test'::regclass
+      AND e.stxname = 'ess_analyze_sample_cache_mcv'
+    EXCEPT ALL
+    SELECT * FROM ess_analyze_sample_cache_mcv_before
 ) AS pairwise_mcv_replayed;
  pairwise_mcv_replayed 
 -----------------------
+ t
+(1 row)
+
+SELECT (SELECT plan FROM ess_analyze_sample_cache_plan_before) =
+       pg_temp.ess_analyze_sample_cache_plan(
+           'SELECT * FROM ess_analyze_sample_cache_test
+            WHERE category = ''category-1'' AND bucket = 1')
+       AS planner_estimate_replayed;
+ planner_estimate_replayed 
+---------------------------
  t
 (1 row)
 
@@ -88,15 +133,55 @@ SELECT NOT EXISTS (
 ANALYZE ess_analyze_sample_cache_test;
 SELECT NOT EXISTS (
     SELECT * FROM ess_analyze_sample_cache_ordinary_before
-    EXCEPT
+    EXCEPT ALL
     SELECT a.attname,
            md5(row_to_json(s)::text)
     FROM pg_statistic s
     JOIN pg_attribute a ON a.attrelid = s.starelid AND a.attnum = s.staattnum
     WHERE s.starelid = 'ess_analyze_sample_cache_test'::regclass
+) AND NOT EXISTS (
+    SELECT a.attname,
+           md5(row_to_json(s)::text)
+    FROM pg_statistic s
+    JOIN pg_attribute a ON a.attrelid = s.starelid AND a.attnum = s.staattnum
+    WHERE s.starelid = 'ess_analyze_sample_cache_test'::regclass
+    EXCEPT ALL
+    SELECT * FROM ess_analyze_sample_cache_ordinary_before
 ) AS second_replay_identical;
  second_replay_identical 
 -------------------------
+ t
+(1 row)
+
+SELECT NOT EXISTS (
+    SELECT * FROM ess_analyze_sample_cache_mcv_before
+    EXCEPT ALL
+    SELECT md5(stxdmcv::text)
+    FROM pg_statistic_ext e
+    JOIN pg_statistic_ext_data d ON d.stxoid = e.oid
+    WHERE e.stxrelid = 'ess_analyze_sample_cache_test'::regclass
+      AND e.stxname = 'ess_analyze_sample_cache_mcv'
+) AND NOT EXISTS (
+    SELECT md5(stxdmcv::text)
+    FROM pg_statistic_ext e
+    JOIN pg_statistic_ext_data d ON d.stxoid = e.oid
+    WHERE e.stxrelid = 'ess_analyze_sample_cache_test'::regclass
+      AND e.stxname = 'ess_analyze_sample_cache_mcv'
+    EXCEPT ALL
+    SELECT * FROM ess_analyze_sample_cache_mcv_before
+) AS second_pairwise_mcv_identical;
+ second_pairwise_mcv_identical 
+-------------------------------
+ t
+(1 row)
+
+SELECT (SELECT plan FROM ess_analyze_sample_cache_plan_before) =
+       pg_temp.ess_analyze_sample_cache_plan(
+           'SELECT * FROM ess_analyze_sample_cache_test
+            WHERE category = ''category-1'' AND bucket = 1')
+       AS second_planner_estimate_identical;
+ second_planner_estimate_identical 
+-----------------------------------
  t
 (1 row)
 
@@ -117,7 +202,7 @@ SET ess.analyze_sample_import = :'samplefile';
 \! truncate -s 1 "$ESS_CORRUPTFILE"
 SET ess.analyze_sample_import = :'corruptfile';
 ANALYZE ess_analyze_sample_cache_test;
-ERROR:  invalid ANALYZE sample file "/tmp/ess-analyze-sample-cache-corrupt.bin": truncated file
+ERROR:  invalid ANALYZE sample file: truncated file
 SET ess.analyze_sample_import = :'samplefile';
 -- A descriptor change is rejected.
 ALTER TABLE ess_analyze_sample_cache_test ADD COLUMN added_column integer;
@@ -142,7 +227,7 @@ CREATE TABLE ess_analyze_sample_cache_partitioned (id integer)
 SET ess.analyze_sample_export = :'samplefile';
 ANALYZE ess_analyze_sample_cache_partitioned;
 ERROR:  ESS ANALYZE sample export/replay supports only a single heap table
-DETAIL:  relation "ess_analyze_sample_cache_partitioned" is inherited, partitioned, or not a heap table
+DETAIL:  relation "ess_analyze_sample_cache_partitioned" is inherited, partitioned, or does not use the heap table access method
 SET ess.analyze_sample_export = '';
 DROP TABLE ess_analyze_sample_cache_partitioned;
 DROP TABLE ess_analyze_sample_cache_test;

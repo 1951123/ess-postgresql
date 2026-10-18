@@ -18,6 +18,7 @@
 
 #include "access/heapam.h"
 #include "access/htup_details.h"
+#include "access/tableam.h"
 #include "catalog/namespace.h"
 #include "commands/analyze_sample_cache.h"
 #include "miscadmin.h"
@@ -53,7 +54,7 @@ static void ess_sample_check_descriptor(Relation relation, uint32 natts,
 										FILE *file, pg_crc32c *crc,
 										const char *path);
 static void ess_sample_file_error(const char *path, const char *operation);
-static void ess_sample_data_error(const char *path, const char *detail);
+static void ess_sample_data_error(const char *detail);
 static void ess_sample_check_u32_size(uint32 value, Size element_size,
 									 const char *what, const char *path);
 
@@ -67,11 +68,11 @@ ess_sample_file_error(const char *path, const char *operation)
 }
 
 static void
-ess_sample_data_error(const char *path, const char *detail)
+ess_sample_data_error(const char *detail)
 {
 	ereport(ERROR,
 			(errcode(ERRCODE_DATA_CORRUPTED),
-			 errmsg("invalid ANALYZE sample file \"%s\": %s", path, detail)));
+			 errmsg("invalid ANALYZE sample file: %s", detail)));
 }
 
 static void
@@ -92,7 +93,7 @@ ess_sample_read_bytes(FILE *file, void *data, size_t len,
 	{
 		if (ferror(file))
 			ess_sample_file_error(path, "read");
-		ess_sample_data_error(path, "truncated file");
+		ess_sample_data_error("truncated file");
 	}
 	if (len > 0)
 		COMP_CRC32C(*crc, data, len);
@@ -235,11 +236,12 @@ ess_analyze_sample_check_relation(Relation relation)
 				 errmsg("ess.analyze_sample_export and ess.analyze_sample_import cannot be enabled together")));
 
 	if (relation->rd_rel->relkind != RELKIND_RELATION ||
-		relation->rd_rel->relhassubclass)
+		relation->rd_rel->relhassubclass ||
+		relation->rd_tableam != GetHeapamTableAmRoutine())
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 				 errmsg("ESS ANALYZE sample export/replay supports only a single heap table"),
-				 errdetail("relation \"%s\" is inherited, partitioned, or not a heap table",
+				 errdetail("relation \"%s\" is inherited, partitioned, or does not use the heap table access method",
 						   RelationGetRelationName(relation))));
 }
 
@@ -360,7 +362,7 @@ ess_analyze_sample_import_file(Relation relation, const char *path, int targrows
 	INIT_CRC32C(crc);
 	ess_sample_read_bytes(file, magic, sizeof(magic), &crc, path);
 	if (memcmp(magic, ESS_ANALYZE_SAMPLE_MAGIC, sizeof(magic)) != 0)
-		ess_sample_data_error(path, "invalid magic");
+		ess_sample_data_error("invalid magic");
 
 	version = ess_sample_read_u32(file, &crc, path);
 	if (version != ESS_ANALYZE_SAMPLE_FORMAT_VERSION)
@@ -474,7 +476,7 @@ ess_analyze_sample_import_file(Relation relation, const char *path, int targrows
 	{
 		if (ferror(file))
 			ess_sample_file_error(path, "read");
-		ess_sample_data_error(path, "truncated checksum");
+		ess_sample_data_error("truncated checksum");
 	}
 	FIN_CRC32C(crc);
 	if (stored_crc != crc)
