@@ -7,7 +7,7 @@ Applies only to `1951123/ess-postgresql`. The research goals and experiment appr
 - Use one Issue → one branch → one Git worktree → one Codex session → one Draft PR. Keep the main checkout stable, and do not merge or destructively clean another checkout without researcher approval.
 - Optional worktree directory: `ESS_PG_WORKTREE_PARENT="$HOME/projects/ess-postgresql/.worktrees"`. If unset, require an explicit chosen location; do not infer one. It is not interchangeable with `ESS_WORKTREE_PARENT` (the established ess-research variable).
 - Shared original inputs may be read from `ESS_DATA_ROOT`; isolated run files belong beneath `ESS_RUNTIME_PARENT`, separated by repo / Issue / run. Source needed exports from `~/.bashrc` and verify them **in each execution shell**; only require variables a command actually needs. Do not modify a user's shell profile.
-- Keep PG build/install and temporary clusters scoped to this worktree or an explicit isolated runtime directory. Never overwrite pinned binaries or stopped clusters belonging to ess-research experiments. Avoid Unix socket paths above the platform's `sun_path` limit; check encoded length before starting a cluster.
+- Keep PG build/install, regression scratch and temporary clusters in the owning experiment's explicit isolated runtime directory, not inside the source Worktree; prefer PostgreSQL out-of-tree builds. Never overwrite pinned binaries or stopped clusters belonging to ess-research experiments. Avoid Unix socket paths above the platform's `sun_path` limit; check encoded length before starting a cluster.
 
 ## Change, validation and evidence
 
