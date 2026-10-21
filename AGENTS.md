@@ -17,3 +17,12 @@ Applies only to `1951123/ess-postgresql`. The research goals and experiment appr
 - For cross-repo integration, document immutable source commit SHA and output contract. The consuming repository independently pins this revision; don't make implicit dependencies on branch HEAD.
 - Do not commit database directories, binaries, raw input archives, fixed ANALYZE sample files, large logs, virtual environments or credentials. Retain only necessary bounded test evidence and sanitized diagnostics.
 - Keep Draft PRs unmerged until researcher review, with failures and skipped tests accurately reported.
+
+
+## Mandatory isolated-build and artifact policy
+
+**ESS_DATA_ROOT is the only shared data root**, read-only for original inputs. Git source commits may be referenced across repositories, but do not consume another Issue's compiled PostgreSQL, install prefix, PGDATA, socket, fixed ANALYZE sample, virtualenv, logs or generated outputs. Each experimental run owns a new pinned source checkout, separate out-of-tree build/install, disposable cluster, and output path under `ESS_RUNTIME_PARENT/ess-postgresql/issue<N>/runs/<run-id>/` (or its consuming experiment's corresponding repository/Issue/run path). Rebuild per experiment, even for identical source commits.
+
+Keep the main checkout on `main`; write source changes only in Issue Worktrees. Configure PostgreSQL builds so all generated build/install/test artifacts stay in the owning runtime/build area whenever supported. If a tool produces generated/ignored files in a source Worktree, Codex must inspect and relocate or safely remove its own generated artifacts, without touching user-owned or other-branch files. `git status --short` alone does not detect ignored debris. Use short Unix socket paths and check actual encoded path length.
+
+Runtime is disposable and need not be maintained by the researcher. Versioned Git evidence should contain minimal source/build pins, tests, necessary scientific observations and reports; never depend on persistent local PG files for reproducibility. Keep large outputs out of Git; request a durable-storage decision before an expensive run if the necessary evidence cannot reasonably be versioned. Older experiments may be described historically, but active experiments must migrate away from cross-Issue shared PG builds before their next substantive run. These conventions do not grant permission to execute experiments or merge.
