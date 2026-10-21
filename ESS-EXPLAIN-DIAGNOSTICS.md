@@ -27,7 +27,9 @@ the product immediately before `clamp_row_est()`; it is distinct from
 `mcv_clause` events identify claimed clause indexes, and `mcv_estimate`
 events contain `clause_count`, `simple_sel`, `mcv_sel`, `mcv_basesel`,
 `mcv_totalsel`, and `stat_sel`. Floating-point fields use `%.17g` decimal
-formatting.
+formatting and are emitted as JSON numbers. If a planner hook supplies a
+non-finite value, diagnostics raises an error instead of emitting invalid JSON
+tokens such as `NaN` or `Infinity`.
 
 For example, a client can read the event array from the first planned query as
 `result[0]["ESS Diagnostics"]["Events"]`. Match base estimates by relation

@@ -51,6 +51,20 @@ begin
 end;
 $$;
 
+-- Compare plan JSON without normalizing costs or row estimates.
+create function explain_plan_matches(text) returns boolean
+language plpgsql as
+$$
+declare
+    plain_plan jsonb;
+    diagnostic_plan jsonb;
+begin
+    execute 'explain (format json) ' || $1 into plain_plan;
+    execute 'explain (ess_diagnostics, format json) ' || $1 into diagnostic_plan;
+    return plain_plan #> '{0,Plan}' = diagnostic_plan #> '{0,Plan}';
+end;
+$$;
+
 -- Disable JIT, or we'll get different output on machines where that's been
 -- forced on
 set jit = off;
@@ -77,6 +91,7 @@ select explain_filter_to_json('explain (ess_diagnostics false, format json) sele
        #> '{0,ESS Diagnostics}';
 select explain_filter_to_json('explain (ess_diagnostics, format json) select * from int8_tbl i8')
        #>> '{0,ESS Diagnostics,Status}';
+select explain_plan_matches('select * from int8_tbl i8');
 select explain_filter_to_json('explain (ess_diagnostics, format json) select 1')
        #>> '{0,ESS Diagnostics,Status}';
 select jsonb_typeof(explain_filter_to_json('explain (ess_diagnostics, format json) select * from int8_tbl i8')

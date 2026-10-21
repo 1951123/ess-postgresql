@@ -31,6 +31,7 @@
 #include "storage/bufmgr.h"
 #include "tcop/tcopprot.h"
 #include "utils/builtins.h"
+#include "utils/float.h"
 #include "utils/guc_tables.h"
 #include "utils/json.h"
 #include "utils/lsyscache.h"
@@ -54,6 +55,21 @@ typedef struct ExplainEstimatorMCVIdentity
 	Oid			relid;
 	Oid			statoid;
 } ExplainEstimatorMCVIdentity;
+
+/* Raw numeric JSON fields must never contain PostgreSQL NaN/Infinity tokens. */
+static void
+ExplainCheckFiniteEstimatorValues(const double *values, int nvalues)
+{
+	int			i;
+
+	for (i = 0; i < nvalues; i++)
+	{
+		if (isnan(values[i]) || isinf(values[i]))
+			ereport(ERROR,
+					(errcode(ERRCODE_DATA_EXCEPTION),
+					 errmsg("non-finite value in ESS EXPLAIN diagnostics")));
+	}
+}
 
 
 /* Hook for plugins to get control in ExplainOneQuery() */
@@ -405,9 +421,12 @@ ExplainRecordBaseEstimate(Oid relid, int rte_index, double rel_tuples,
 						  double rows_postclamp)
 {
 	StringInfoData event;
+	double		values[] = {rel_tuples, selectivity, nrows_preclamp,
+						 rows_postclamp};
 
 	if (!ExplainEstimatorDiagnosticsEnabled())
 		return;
+	ExplainCheckFiniteEstimatorValues(values, lengthof(values));
 
 	initStringInfo(&event);
 	appendStringInfo(&event,
@@ -476,9 +495,12 @@ ExplainRecordMCVEstimate(Oid relid, Oid statoid, int clause_count,
 	StringInfoData event;
 	ListCell   *lc;
 	bool		matched = false;
+	double		values[] = {simple_sel, mcv_sel, mcv_basesel, mcv_totalsel,
+						 stat_sel};
 
 	if (!ExplainEstimatorDiagnosticsEnabled())
 		return;
+	ExplainCheckFiniteEstimatorValues(values, lengthof(values));
 
 	foreach(lc, explain_estimator_pending_mcv)
 	{

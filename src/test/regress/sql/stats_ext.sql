@@ -50,6 +50,80 @@ BEGIN
 END;
 $$;
 
+CREATE FUNCTION check_ess_mcv_json(query text, statistics_name text)
+RETURNS boolean
+LANGUAGE plpgsql
+AS
+$$
+DECLARE
+    plan jsonb;
+    plain_plan jsonb;
+    diagnostics jsonb;
+    expected_relid oid;
+    expected_statoid oid;
+    selection jsonb;
+    estimate jsonb;
+    base_estimate jsonb;
+    clause_indexes int[];
+BEGIN
+    EXECUTE 'EXPLAIN (FORMAT JSON) ' || query INTO plain_plan;
+    EXECUTE 'EXPLAIN (ESS_DIAGNOSTICS, FORMAT JSON) ' || query INTO plan;
+    diagnostics := plan #> '{0,ESS Diagnostics}';
+    SELECT stxrelid, oid INTO expected_relid, expected_statoid
+      FROM pg_statistic_ext WHERE stxname = statistics_name;
+    SELECT event INTO selection
+      FROM jsonb_array_elements(diagnostics->'Events') AS e(event)
+     WHERE event->>'type' = 'mcv_selection';
+    SELECT event INTO estimate
+      FROM jsonb_array_elements(diagnostics->'Events') AS e(event)
+     WHERE event->>'type' = 'mcv_estimate';
+    SELECT event INTO base_estimate
+      FROM jsonb_array_elements(diagnostics->'Events') AS e(event)
+     WHERE event->>'type' = 'base_estimate';
+    SELECT array_agg((event->>'clause_index')::int ORDER BY ordinality)
+      INTO clause_indexes
+      FROM jsonb_array_elements(diagnostics->'Events') WITH ORDINALITY AS e(event, ordinality)
+     WHERE event->>'type' = 'mcv_clause';
+
+    RETURN diagnostics->>'Status' = 'complete'
+       AND plain_plan #> '{0,Plan}' = plan #> '{0,Plan}'
+       AND jsonb_typeof(diagnostics->'Event Count') = 'number'
+       AND (diagnostics->>'Event Count')::int = jsonb_array_length(diagnostics->'Events')
+       AND NOT EXISTS (
+             SELECT 1 FROM jsonb_array_elements(diagnostics->'Events') AS e(event)
+              WHERE jsonb_typeof(event->'sequence') <> 'number'
+                 OR jsonb_typeof(event->'type') <> 'string')
+       AND (SELECT count(*) FROM jsonb_array_elements(diagnostics->'Events') AS e(event)
+             WHERE event->>'type' = 'mcv_selection') = 1
+       AND jsonb_typeof(selection->'relation_oid') = 'number'
+       AND jsonb_typeof(selection->'stat_oid') = 'number'
+       AND (selection->>'relation_oid')::oid = expected_relid
+       AND (selection->>'stat_oid')::oid = expected_statoid
+       AND jsonb_typeof(selection->'key_count') = 'number'
+       AND (selection->>'key_count')::int = 3
+       AND jsonb_typeof(estimate->'relation_oid') = 'number'
+       AND jsonb_typeof(estimate->'stat_oid') = 'number'
+       AND (estimate->>'relation_oid')::oid = expected_relid
+       AND (estimate->>'stat_oid')::oid = expected_statoid
+       AND NOT EXISTS (
+             SELECT 1 FROM jsonb_array_elements(diagnostics->'Events') AS e(event)
+              WHERE event->>'type' = 'mcv_clause'
+                AND jsonb_typeof(event->'clause_index') <> 'number')
+       AND clause_indexes = ARRAY[0, 1, 2]
+       AND jsonb_typeof(base_estimate->'relation_oid') = 'number'
+       AND (base_estimate->>'relation_oid')::oid = expected_relid
+       AND jsonb_typeof(base_estimate->'rte_index') = 'number'
+       AND NOT EXISTS (
+             SELECT 1 FROM unnest(ARRAY['rel_tuples', 'selectivity', 'nrows_preclamp',
+                                       'rows_postclamp']) AS field(name)
+              WHERE jsonb_typeof(base_estimate->field.name) <> 'number')
+       AND NOT EXISTS (
+             SELECT 1 FROM unnest(ARRAY['simple_sel', 'mcv_sel', 'mcv_basesel',
+                                       'mcv_totalsel', 'stat_sel']) AS field(name)
+              WHERE jsonb_typeof(estimate->field.name) <> 'number');
+END;
+$$;
+
 -- Verify failures
 CREATE TABLE ext_stats_test (x text, y int, z int);
 CREATE STATISTICS tst;
@@ -983,6 +1057,8 @@ ANALYZE mcv_lists;
 
 SELECT * FROM check_ess_diagnostics('SELECT * FROM mcv_lists WHERE a = 1 OR b = ''1'' OR c = 1');
 SELECT * FROM check_ess_diagnostics('SELECT * FROM mcv_lists WHERE a = 1 AND b = ''1'' AND c = 1');
+SELECT check_ess_mcv_json('SELECT * FROM mcv_lists WHERE a = 1 AND b = ''1'' AND c = 1',
+                          'mcv_lists_stats');
 
 SELECT * FROM check_estimated_rows('SELECT * FROM mcv_lists WHERE a = 1 AND b = ''1''');
 
