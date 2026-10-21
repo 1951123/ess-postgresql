@@ -47,6 +47,7 @@ typedef struct ExplainState
 	bool		summary;		/* print total planning and execution timing */
 	bool		settings;		/* print modified settings */
 	bool		generic;		/* generate a generic plan */
+	bool		ess_diagnostics; /* include research estimator diagnostics */
 	ExplainFormat format;		/* output format */
 	/* state for output formatting --- not reset for each new plan tree */
 	int			indent;			/* current indentation level */
@@ -98,6 +99,19 @@ extern void ExplainPrintPlan(ExplainState *es, QueryDesc *queryDesc);
 extern void ExplainPrintTriggers(ExplainState *es, QueryDesc *queryDesc);
 
 extern void ExplainPrintJITSummary(ExplainState *es, QueryDesc *queryDesc);
+
+/* Research-only estimator diagnostics collected during EXPLAIN planning. */
+extern bool ExplainEstimatorDiagnosticsEnabled(void);
+extern void ExplainRecordBaseEstimate(Oid relid, int rte_index,
+									  double rel_tuples, double selectivity,
+									  double nrows_preclamp,
+									  double rows_postclamp);
+extern void ExplainRecordMCVSelection(Oid relid, Oid statoid, int nkeys);
+extern void ExplainRecordMCVClause(Oid relid, Oid statoid, int clause_index);
+extern void ExplainRecordMCVEstimate(Oid relid, Oid statoid, int clause_count,
+									 double simple_sel, double mcv_sel,
+									 double mcv_basesel, double mcv_totalsel,
+									 double stat_sel);
 
 extern void ExplainQueryText(ExplainState *es, QueryDesc *queryDesc);
 extern void ExplainQueryParameters(ExplainState *es, ParamListInfo params, int maxlen);

@@ -27,6 +27,29 @@ begin
 end;
 $$;
 
+CREATE FUNCTION check_ess_diagnostics(text)
+RETURNS TABLE (status text, base_estimates int, mcv_statistics int,
+               covered_clauses int, mcv_estimates int, has_preclamp_number boolean)
+LANGUAGE plpgsql
+AS
+$$
+DECLARE
+    plan jsonb;
+    diagnostics jsonb;
+BEGIN
+    EXECUTE 'EXPLAIN (ESS_DIAGNOSTICS, FORMAT JSON) ' || $1 INTO plan;
+    diagnostics := plan #> '{0,ESS Diagnostics}';
+    RETURN QUERY
+    SELECT diagnostics->>'Status',
+           count(*) FILTER (WHERE event->>'type' = 'base_estimate')::int,
+           count(*) FILTER (WHERE event->>'type' = 'mcv_selection')::int,
+           count(*) FILTER (WHERE event->>'type' = 'mcv_clause')::int,
+           count(*) FILTER (WHERE event->>'type' = 'mcv_estimate')::int,
+           coalesce(bool_or(jsonb_typeof(event->'nrows_preclamp') = 'number'), false)
+      FROM jsonb_array_elements(diagnostics->'Events') AS e(event);
+END;
+$$;
+
 -- Verify failures
 CREATE TABLE ext_stats_test (x text, y int, z int);
 CREATE STATISTICS tst;
@@ -949,12 +972,17 @@ ANALYZE mcv_lists;
 
 SELECT * FROM check_estimated_rows('SELECT * FROM mcv_lists WHERE a = 1 AND b = ''1''');
 
+SELECT * FROM check_ess_diagnostics('SELECT * FROM mcv_lists WHERE a = 1 AND b = ''1''');
+
 SELECT * FROM check_estimated_rows('SELECT * FROM mcv_lists WHERE a = 1 AND b = ''1'' AND c = 1');
 
 -- create statistics
 CREATE STATISTICS mcv_lists_stats (mcv) ON a, b, c FROM mcv_lists;
 
 ANALYZE mcv_lists;
+
+SELECT * FROM check_ess_diagnostics('SELECT * FROM mcv_lists WHERE a = 1 OR b = ''1'' OR c = 1');
+SELECT * FROM check_ess_diagnostics('SELECT * FROM mcv_lists WHERE a = 1 AND b = ''1'' AND c = 1');
 
 SELECT * FROM check_estimated_rows('SELECT * FROM mcv_lists WHERE a = 1 AND b = ''1''');
 
@@ -1485,6 +1513,9 @@ CREATE STATISTICS mcv_lists_multi_1 (mcv) ON a, b FROM mcv_lists_multi;
 CREATE STATISTICS mcv_lists_multi_2 (mcv) ON c, d FROM mcv_lists_multi;
 
 ANALYZE mcv_lists_multi;
+
+SELECT * FROM check_ess_diagnostics('SELECT * FROM mcv_lists_multi WHERE a = 0 OR b = 0 OR c = 0 OR d = 0');
+SELECT * FROM check_ess_diagnostics('SELECT * FROM mcv_lists_multi WHERE a = 0 AND b = 0 AND c = 0 AND d = 0');
 
 SELECT * FROM check_estimated_rows('SELECT * FROM mcv_lists_multi WHERE a = 0 AND b = 0');
 SELECT * FROM check_estimated_rows('SELECT * FROM mcv_lists_multi WHERE c = 0 AND d = 0');

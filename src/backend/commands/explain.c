@@ -17,6 +17,7 @@
 #include "catalog/pg_type.h"
 #include "commands/createas.h"
 #include "commands/defrem.h"
+#include "commands/explain.h"
 #include "commands/prepare.h"
 #include "executor/nodeHash.h"
 #include "foreign/fdwapi.h"
@@ -39,6 +40,20 @@
 #include "utils/tuplesort.h"
 #include "utils/typcache.h"
 #include "utils/xml.h"
+
+/* Opt-in diagnostics are scoped to the EXPLAIN currently being produced. */
+static bool explain_estimator_diagnostics = false;
+static MemoryContext explain_estimator_context = NULL;
+static List *explain_estimator_events = NIL;
+static int explain_estimator_event_count = 0;
+static int explain_estimator_unmatched_mcv_estimates = 0;
+static List *explain_estimator_pending_mcv = NIL;
+
+typedef struct ExplainEstimatorMCVIdentity
+{
+	Oid			relid;
+	Oid			statoid;
+} ExplainEstimatorMCVIdentity;
 
 
 /* Hook for plugins to get control in ExplainOneQuery() */
@@ -172,6 +187,14 @@ ExplainQuery(ParseState *pstate, ExplainStmt *stmt,
 	ListCell   *lc;
 	bool		timing_set = false;
 	bool		summary_set = false;
+	bool		estimator_diagnostics_set = false;
+
+	explain_estimator_diagnostics = false;
+	explain_estimator_context = CurrentMemoryContext;
+	explain_estimator_events = NIL;
+	explain_estimator_event_count = 0;
+	explain_estimator_unmatched_mcv_estimates = 0;
+	explain_estimator_pending_mcv = NIL;
 
 	/* Parse options list. */
 	foreach(lc, stmt->options)
@@ -192,6 +215,11 @@ ExplainQuery(ParseState *pstate, ExplainStmt *stmt,
 			es->settings = defGetBoolean(opt);
 		else if (strcmp(opt->defname, "generic_plan") == 0)
 			es->generic = defGetBoolean(opt);
+		else if (strcmp(opt->defname, "ess_diagnostics") == 0)
+		{
+			estimator_diagnostics_set = true;
+			es->ess_diagnostics = defGetBoolean(opt);
+		}
 		else if (strcmp(opt->defname, "timing") == 0)
 		{
 			timing_set = true;
@@ -250,6 +278,12 @@ ExplainQuery(ParseState *pstate, ExplainStmt *stmt,
 				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 				 errmsg("EXPLAIN options ANALYZE and GENERIC_PLAN cannot be used together")));
 
+	if (estimator_diagnostics_set && es->ess_diagnostics &&
+		es->format != EXPLAIN_FORMAT_JSON)
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("EXPLAIN option ESS_DIAGNOSTICS requires FORMAT JSON")));
+
 	/* if the summary was not set explicitly, set default value */
 	es->summary = (summary_set) ? es->summary : es->analyze;
 
@@ -269,6 +303,10 @@ ExplainQuery(ParseState *pstate, ExplainStmt *stmt,
 	rewritten = QueryRewrite(castNode(Query, stmt->query));
 
 	/* emit opening boilerplate */
+	explain_estimator_events = NIL;
+	explain_estimator_event_count = 0;
+	explain_estimator_unmatched_mcv_estimates = 0;
+	explain_estimator_pending_mcv = NIL;
 	ExplainBeginOutput(es);
 
 	if (rewritten == NIL)
@@ -290,6 +328,10 @@ ExplainQuery(ParseState *pstate, ExplainStmt *stmt,
 			ExplainOneQuery(lfirst_node(Query, l),
 							CURSOR_OPT_PARALLEL_OK, NULL, es,
 							pstate->p_sourcetext, params, pstate->p_queryEnv);
+			explain_estimator_events = NIL;
+			explain_estimator_event_count = 0;
+			explain_estimator_unmatched_mcv_estimates = 0;
+			explain_estimator_pending_mcv = NIL;
 
 			/* Separate plans with an appropriate separator */
 			if (lnext(rewritten, l) != NULL)
@@ -302,6 +344,12 @@ ExplainQuery(ParseState *pstate, ExplainStmt *stmt,
 	Assert(es->indent == 0);
 
 	/* output tuples */
+	explain_estimator_diagnostics = false;
+	explain_estimator_events = NIL;
+	explain_estimator_event_count = 0;
+	explain_estimator_unmatched_mcv_estimates = 0;
+	explain_estimator_pending_mcv = NIL;
+	explain_estimator_context = NULL;
 	tstate = begin_tup_output_tupdesc(dest, ExplainResultDesc(stmt),
 									  &TTSOpsVirtual);
 	if (es->format == EXPLAIN_FORMAT_TEXT)
@@ -327,6 +375,137 @@ NewExplainState(void)
 	es->str = makeStringInfo();
 
 	return es;
+}
+
+/* Planner contexts are reset before EXPLAIN emits its result, so keep events
+ * in the command context that owns ExplainState instead. */
+bool
+ExplainEstimatorDiagnosticsEnabled(void)
+{
+	return explain_estimator_diagnostics;
+}
+
+static void
+ExplainAppendEstimatorEvent(StringInfo event)
+{
+	MemoryContext oldcontext;
+
+	Assert(explain_estimator_context != NULL);
+	oldcontext = MemoryContextSwitchTo(explain_estimator_context);
+	/* event->data was allocated in the caller's context; copy it here. */
+	explain_estimator_events = lappend(explain_estimator_events,
+										  pstrdup(event->data));
+	explain_estimator_event_count++;
+	MemoryContextSwitchTo(oldcontext);
+}
+
+void
+ExplainRecordBaseEstimate(Oid relid, int rte_index, double rel_tuples,
+						  double selectivity, double nrows_preclamp,
+						  double rows_postclamp)
+{
+	StringInfoData event;
+
+	if (!ExplainEstimatorDiagnosticsEnabled())
+		return;
+
+	initStringInfo(&event);
+	appendStringInfo(&event,
+					 "{\"sequence\":%d,\"type\":\"base_estimate\","
+					 "\"relation_oid\":%u,\"rte_index\":%d,"
+					 "\"rel_tuples\":%.17g,\"selectivity\":%.17g,"
+					 "\"nrows_preclamp\":%.17g,\"rows_postclamp\":%.17g}",
+					 explain_estimator_event_count + 1, relid, rte_index,
+					 rel_tuples, selectivity, nrows_preclamp, rows_postclamp);
+	ExplainAppendEstimatorEvent(&event);
+	pfree(event.data);
+}
+
+void
+ExplainRecordMCVSelection(Oid relid, Oid statoid, int nkeys)
+{
+	StringInfoData event;
+	MemoryContext oldcontext;
+	ExplainEstimatorMCVIdentity *identity;
+
+	if (!ExplainEstimatorDiagnosticsEnabled())
+		return;
+
+	Assert(explain_estimator_context != NULL);
+	oldcontext = MemoryContextSwitchTo(explain_estimator_context);
+	identity = palloc(sizeof(ExplainEstimatorMCVIdentity));
+	identity->relid = relid;
+	identity->statoid = statoid;
+	explain_estimator_pending_mcv = lappend(explain_estimator_pending_mcv,
+											 identity);
+	MemoryContextSwitchTo(oldcontext);
+	initStringInfo(&event);
+	appendStringInfo(&event,
+					 "{\"sequence\":%d,\"type\":\"mcv_selection\","
+					 "\"relation_oid\":%u,\"stat_oid\":%u,\"key_count\":%d}",
+					 explain_estimator_event_count + 1, relid, statoid, nkeys);
+	ExplainAppendEstimatorEvent(&event);
+	pfree(event.data);
+}
+
+void
+ExplainRecordMCVClause(Oid relid, Oid statoid, int clause_index)
+{
+	StringInfoData event;
+
+	if (!ExplainEstimatorDiagnosticsEnabled())
+		return;
+
+	initStringInfo(&event);
+	appendStringInfo(&event,
+					 "{\"sequence\":%d,\"type\":\"mcv_clause\","
+					 "\"relation_oid\":%u,\"stat_oid\":%u,"
+					 "\"clause_index\":%d}",
+					 explain_estimator_event_count + 1, relid, statoid,
+					 clause_index);
+	ExplainAppendEstimatorEvent(&event);
+	pfree(event.data);
+}
+
+void
+ExplainRecordMCVEstimate(Oid relid, Oid statoid, int clause_count,
+						 double simple_sel, double mcv_sel,
+						 double mcv_basesel, double mcv_totalsel,
+						 double stat_sel)
+{
+	StringInfoData event;
+	ListCell   *lc;
+	bool		matched = false;
+
+	if (!ExplainEstimatorDiagnosticsEnabled())
+		return;
+
+	foreach(lc, explain_estimator_pending_mcv)
+	{
+		ExplainEstimatorMCVIdentity *identity = lfirst(lc);
+
+		if (identity->relid == relid && identity->statoid == statoid)
+		{
+			explain_estimator_pending_mcv =
+				list_delete_cell(explain_estimator_pending_mcv, lc);
+			matched = true;
+			break;
+		}
+	}
+	if (!matched)
+		explain_estimator_unmatched_mcv_estimates++;
+	initStringInfo(&event);
+	appendStringInfo(&event,
+					 "{\"sequence\":%d,\"type\":\"mcv_estimate\","
+					 "\"relation_oid\":%u,\"stat_oid\":%u,"
+					 "\"clause_count\":%d,\"simple_sel\":%.17g,"
+					 "\"mcv_sel\":%.17g,\"mcv_basesel\":%.17g,"
+					 "\"mcv_totalsel\":%.17g,\"stat_sel\":%.17g}",
+					 explain_estimator_event_count + 1, relid, statoid,
+					 clause_count, simple_sel, mcv_sel, mcv_basesel,
+					 mcv_totalsel, stat_sel);
+	ExplainAppendEstimatorEvent(&event);
+	pfree(event.data);
 }
 
 /*
@@ -401,9 +580,22 @@ ExplainOneQuery(Query *query, int cursorOptions,
 		if (es->buffers)
 			bufusage_start = pgBufferUsage;
 		INSTR_TIME_SET_CURRENT(planstart);
+		explain_estimator_events = NIL;
+		explain_estimator_event_count = 0;
+		explain_estimator_unmatched_mcv_estimates = 0;
+		explain_estimator_pending_mcv = NIL;
 
-		/* plan the query */
-		plan = pg_plan_query(query, queryString, cursorOptions, params);
+		/* Keep the collector active only during this opt-in planning call. */
+		explain_estimator_diagnostics = es->ess_diagnostics;
+		PG_TRY();
+		{
+			plan = pg_plan_query(query, queryString, cursorOptions, params);
+		}
+		PG_FINALLY();
+		{
+			explain_estimator_diagnostics = false;
+		}
+		PG_END_TRY();
 
 		INSTR_TIME_SET_CURRENT(planduration);
 		INSTR_TIME_SUBTRACT(planduration, planstart);
@@ -614,6 +806,30 @@ ExplainOnePlan(PlannedStmt *plannedstmt, IntoClause *into, ExplainState *es,
 
 	/* Create textual dump of plan tree */
 	ExplainPrintPlan(es, queryDesc);
+	if (es->ess_diagnostics)
+	{
+		ListCell   *lc;
+		bool		incomplete = explain_estimator_pending_mcv != NIL ||
+			explain_estimator_unmatched_mcv_estimates > 0;
+		ExplainOpenGroup("ESS Diagnostics", "ESS Diagnostics", true, es);
+		ExplainPropertyText("Status",
+						 explain_estimator_event_count == 0 ? "empty" :
+						 incomplete ? "incomplete" : "complete", es);
+		ExplainPropertyInteger("Event Count", NULL,
+							 explain_estimator_event_count, es);
+		ExplainJSONLineEnding(es);
+		appendStringInfoSpaces(es->str, 2 * es->indent);
+		escape_json(es->str, "Events");
+		appendStringInfoString(es->str, ": [");
+		foreach(lc, explain_estimator_events)
+		{
+			if (lc != list_head(explain_estimator_events))
+				appendStringInfoString(es->str, ", ");
+			appendStringInfoString(es->str, (const char *) lfirst(lc));
+		}
+		appendStringInfoChar(es->str, ']');
+		ExplainCloseGroup("ESS Diagnostics", "ESS Diagnostics", true, es);
+	}
 
 	/* Show buffer usage in planning */
 	if (bufusage)

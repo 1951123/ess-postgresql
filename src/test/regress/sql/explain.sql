@@ -70,6 +70,19 @@ select explain_filter('explain (analyze, buffers, format yaml) select * from int
 select explain_filter('explain (buffers, format text) select * from int8_tbl i8');
 select explain_filter('explain (buffers, format json) select * from int8_tbl i8');
 
+-- Research-only estimator diagnostics are absent unless explicitly requested.
+select explain_filter_to_json('explain (format json) select * from int8_tbl i8')
+       #> '{0,ESS Diagnostics}';
+select explain_filter_to_json('explain (ess_diagnostics false, format json) select * from int8_tbl i8')
+       #> '{0,ESS Diagnostics}';
+select explain_filter_to_json('explain (ess_diagnostics, format json) select * from int8_tbl i8')
+       #>> '{0,ESS Diagnostics,Status}';
+select explain_filter_to_json('explain (ess_diagnostics, format json) select 1')
+       #>> '{0,ESS Diagnostics,Status}';
+select jsonb_typeof(explain_filter_to_json('explain (ess_diagnostics, format json) select * from int8_tbl i8')
+                    #> '{0,ESS Diagnostics,Events,0,nrows_preclamp}');
+select explain_filter('explain (ess_diagnostics, format text) select * from int8_tbl i8');
+
 -- Check output including I/O timings.  These fields are conditional
 -- but always set in JSON format, so check them only in this case.
 set track_io_timing = on;

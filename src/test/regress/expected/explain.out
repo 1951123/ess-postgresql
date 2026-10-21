@@ -226,6 +226,45 @@ select explain_filter('explain (buffers, format json) select * from int8_tbl i8'
  ]
 (1 row)
 
+-- Research-only estimator diagnostics are absent unless explicitly requested.
+select explain_filter_to_json('explain (format json) select * from int8_tbl i8')
+       #> '{0,ESS Diagnostics}';
+ ?column? 
+----------
+ 
+(1 row)
+
+select explain_filter_to_json('explain (ess_diagnostics false, format json) select * from int8_tbl i8')
+       #> '{0,ESS Diagnostics}';
+ ?column? 
+----------
+ 
+(1 row)
+
+select explain_filter_to_json('explain (ess_diagnostics, format json) select * from int8_tbl i8')
+       #>> '{0,ESS Diagnostics,Status}';
+ ?column? 
+----------
+ complete
+(1 row)
+
+select explain_filter_to_json('explain (ess_diagnostics, format json) select 1')
+       #>> '{0,ESS Diagnostics,Status}';
+ ?column? 
+----------
+ empty
+(1 row)
+
+select jsonb_typeof(explain_filter_to_json('explain (ess_diagnostics, format json) select * from int8_tbl i8')
+                    #> '{0,ESS Diagnostics,Events,0,nrows_preclamp}');
+ jsonb_typeof 
+--------------
+ number
+(1 row)
+
+select explain_filter('explain (ess_diagnostics, format text) select * from int8_tbl i8');
+ERROR:  EXPLAIN option ESS_DIAGNOSTICS requires FORMAT JSON
+CONTEXT:  PL/pgSQL function explain_filter(text) line 5 at FOR over EXECUTE statement
 -- Check output including I/O timings.  These fields are conditional
 -- but always set in JSON format, so check them only in this case.
 set track_io_timing = on;
