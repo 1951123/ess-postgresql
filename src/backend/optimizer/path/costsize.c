@@ -77,6 +77,7 @@
 #include "access/amapi.h"
 #include "access/htup_details.h"
 #include "access/tsmapi.h"
+#include "commands/explain.h"
 #include "executor/executor.h"
 #include "executor/nodeAgg.h"
 #include "executor/nodeHash.h"
@@ -5028,6 +5029,13 @@ set_baserel_size_estimates(PlannerInfo *root, RelOptInfo *rel)
 	nrows = rel->tuples * selectivity;
 
 	rel->rows = clamp_row_est(nrows);
+	if (ExplainEstimatorDiagnosticsEnabled())
+	{
+		RangeTblEntry *rte = planner_rt_fetch(rel->relid, root);
+
+		ExplainRecordBaseEstimate(rte->relid, rel->relid, rel->tuples,
+								  selectivity, nrows, rel->rows);
+	}
 
 #ifdef ESS_MCV_NUMERIC_TRACE
 	if (debug_query_string != NULL &&

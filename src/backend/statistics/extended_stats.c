@@ -23,6 +23,7 @@
 #include "catalog/indexing.h"
 #include "catalog/pg_collation.h"
 #include "catalog/pg_statistic_ext.h"
+#include "commands/explain.h"
 #include "catalog/pg_statistic_ext_data.h"
 #include "executor/executor.h"
 #include "commands/defrem.h"
@@ -1851,6 +1852,9 @@ statext_mcv_clauselist_selectivity(PlannerInfo *root, List *clauses, int varReli
 
 		/* Ensure choose_best_statistics produced an expected stats type. */
 		Assert(stat->kind == STATS_EXT_MCV);
+		if (ExplainEstimatorDiagnosticsEnabled())
+			ExplainRecordMCVSelection(rte->relid, stat->statOid,
+								  bms_num_members(stat->keys));
 
 		/* now filter the clauses to be estimated using the selected MCV */
 		stat_clauses = NIL;
@@ -1907,6 +1911,8 @@ statext_mcv_clauselist_selectivity(PlannerInfo *root, List *clauses, int varReli
 			/* add clause to list and mark it as estimated */
 			stat_clauses = lappend(stat_clauses, (Node *) lfirst(l));
 			*estimatedclauses = bms_add_member(*estimatedclauses, listidx);
+			if (ExplainEstimatorDiagnosticsEnabled())
+				ExplainRecordMCVClause(rte->relid, stat->statOid, listidx);
 			ereport(DEBUG1,
 						(errmsg("ESS_MCV_TRACE: relid=%u selected_stat_oid=%u claimed_clause_index=%d",
 								rte->relid, stat->statOid, listidx)));
@@ -2055,6 +2061,11 @@ statext_mcv_clauselist_selectivity(PlannerInfo *root, List *clauses, int varReli
 
 			/* Factor this into the overall result */
 			sel *= stat_sel;
+			if (ExplainEstimatorDiagnosticsEnabled())
+				ExplainRecordMCVEstimate(rte->relid, stat->statOid,
+										 list_length(stat_clauses), simple_sel,
+										 mcv_sel, mcv_basesel, mcv_totalsel,
+										 stat_sel);
 
 #ifdef ESS_MCV_NUMERIC_TRACE
 			/*
